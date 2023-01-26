@@ -1,9 +1,9 @@
 from threading import Lock
 from multiprocessing import Queue, pool
 import dataclasses 
-from datetime import datetime
 from collections import deque
 import hashlib
+import time
 
 from tinydb import TinyDB
 from bs4 import BeautifulSoup
@@ -17,12 +17,14 @@ base_url = "https://en.wikipedia.org"
 class PerfMon:
     urls_extracted : int
     keywords_extracted : int
-    time_ms : int
+    crawl_time: float 
+    timestamp: float 
 
-    def __init__(self, num_urls, num_words, time):
+    def __init__(self, num_urls, num_words, elapsed_time, stamp):
         self.urls_extracted = num_urls
         self.keywords_extracted = num_words
-        self.time_ms = time
+        self.crawl_time = elapsed_time
+        self.timestamp= stamp
 
 @dataclasses.dataclass
 class CrawlData:
@@ -41,18 +43,19 @@ class CrawlerManager:
     
     filter_lock = Lock()
     db_lock = Lock()
+    file_lock = Lock()
 
-    def __init__(self, seed, db_file, perf_file):
+    def __init__(self, seed, db_file, perf_file, max_threads):
+        self.num_threads = max_threads
         self.db = TinyDB(db_file)
         self.expored_filter = ScalableBloomFilter(mode=ScalableBloomFilter.SMALL_SET_GROWTH)
         self.frontier_urls = Queue()
         self.frontier_urls.put(seed)
         self.perf_record = perf_file
+        self.start_time = time.time()
         with open(self.perf_record, "w") as mon:
-            mon.write("New URLs Crawled, New keywords extracted, Recent Crawl Time (ms), 10 Crawl Rolling Ave (ms), Pages / Min, Successfully Crawled, Attempted Crawl, Total URLs, Success Rate, Attempted Ratio, Success Ratio\n")
-
-    def __del__(self):
-        self.perf_record.close()
+            mon.write("Successfully Crawled, Timestamp (us), New URLs Added, New Keywords Extracted, Individual Crawl Time (us), " +\
+                "10 Crawl Rolling Ave (us), Pages Traversed / Min, Total Keywords Extracted, Keywords / Min, Attempted Crawl, Total URLs, Success Rate, Success Ratio\n")
 
     def add(self, url):
         with self.filter_lock:
@@ -81,27 +84,30 @@ class CrawlerManager:
             self.expored_filter.add(data.url)
 
         self.total_keywords += perf.keywords_extracted
-        self.rolling_average.append(perf.time_ms)
+        self.rolling_average.append(perf.crawl_time)
         rolling = sum(self.rolling_average) / len(self.rolling_average)
 
-        with open(self.perf_record, "a") as mon:
-            mon.write(
-                f"{perf.urls_extracted},{perf.keywords_extracted},{perf.time_ms},{rolling},{60000 / rolling}," + \
-                f"{self.successful_urls},{self.attempted_urls},{self.total_urls}," + \
-                f"{self.successful_urls / self.attempted_urls},{self.successful_urls / self.total_urls},{self.attempted_urls / self.total_urls}\n"
-            )
+        with self.file_lock:
+            with open(self.perf_record, "a") as mon:
+                mon.write(
+                    f"{self.successful_urls}, {perf.timestamp}," + \
+                        f"{perf.urls_extracted},{perf.keywords_extracted},{perf.crawl_time},{rolling}," + \
+                        f"{60 / rolling},{self.total_keywords},{(self.total_keywords * 60)/(perf.timestamp)},{self.attempted_urls},{self.total_urls}," + \
+                        f"{self.successful_urls / self.attempted_urls},{self.successful_urls / self.total_urls}\n"
+                )
 
     def run(self):
-        with pool.ThreadPool(processes=20) as t_p:
-            while True:
+        self.start_time = time.time()
+        with pool.ThreadPool(processes=10) as t_p:
+            while(self.successful_urls < 10000):
                 t_p.apply(crawl)
 
-manager = CrawlerManager(base_url + "/wiki/Embedded_C%2B%2B", "db.json", "perf.csv")
+manager = CrawlerManager(base_url + "/wiki/Embedded_C%2B%2B", "db.json", "perf.csv", 3)
 
 def crawl():
     global manager
-    print("NEW CRAWLER")
-    start = datetime.now()
+    #while True:
+    start = time.time()
     # Get the URL
     url = manager.pop()
     try:
@@ -123,11 +129,11 @@ def crawl():
     # Get keywords for the webpage
     keywords_ext = [l.text for d in soup.find_all("div", {"id": "mw-normal-catlinks"}) for l in d.find_all('li')]
     # Time Data
-    time_ms = (start - datetime.now()).microseconds
+    elapsed_time = time.time() - start
+    timestamp = (time.time() - manager.start_time )
     # Record Data
-    perf = PerfMon(num_urls, len(keywords_ext), time_ms)
+    perf = PerfMon(num_urls, len(keywords_ext), elapsed_time, timestamp)
     data = CrawlData(url, mac, keywords_ext)
     manager.record(data, perf)
 
 manager.run()
-# cd Documents\School\Year_4\CS4675\Ad-Nauseam
