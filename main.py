@@ -45,8 +45,7 @@ class CrawlerManager:
     db_lock = Lock()
     file_lock = Lock()
 
-    def __init__(self, seed, db_file, perf_file, max_threads):
-        self.num_threads = max_threads
+    def __init__(self, seed, db_file, perf_file):
         self.db = TinyDB(db_file)
         self.expored_filter = ScalableBloomFilter(mode=ScalableBloomFilter.SMALL_SET_GROWTH)
         self.frontier_urls = Queue()
@@ -102,11 +101,10 @@ class CrawlerManager:
             while(self.successful_urls < 10000):
                 t_p.apply(crawl)
 
-manager = CrawlerManager(base_url + "/wiki/Embedded_C%2B%2B", "db.json", "perf.csv", 3)
+manager = CrawlerManager(base_url + "/wiki/Embedded_C%2B%2B", "db.json", "perf.csv")
 
 def crawl():
     global manager
-    #while True:
     start = time.time()
     # Get the URL
     url = manager.pop()
